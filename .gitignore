@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 仮想環境
+.venv/
+venv/
+
+# 生成物
+output/
+sample.xlsx
+_tmp_*.png
