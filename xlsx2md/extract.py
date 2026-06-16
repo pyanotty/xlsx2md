@@ -84,6 +84,11 @@ def extract_sheet(ws, wsf, options) -> SheetModel | None:
                     raw = vf
             text = _format_value(raw)
             if text.strip() != "":
+                # ハイパーリンクは "テキスト (URL)" で URL を併記(両経路共通)
+                link = getattr(cell, "hyperlink", None)
+                target = getattr(link, "target", None) if link else None
+                if target and target not in text:
+                    text = f"{text} ({target})"
                 origin_text[pos] = text
                 style[pos] = _cell_style(cell)
 

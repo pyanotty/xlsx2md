@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 from .converter import Options, convert
 from .debug import dump_segments
 from .extract import extract_sheet
+from .pipeline import convert_structured
 from .segment import segment
 
 
@@ -48,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="数式キャッシュが無い時に式文字列へフォールバックしない")
     parser.add_argument("--segment", action="store_true",
                         help="②分割の可視化のみ行う(Markdown は出力しない)")
+    parser.add_argument("--faithful", action="store_true",
+                        help="v1 方式(1シート=1HTMLテーブル)で忠実出力する")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="詳細ログを出力する")
     args = parser.parse_args(argv)
@@ -70,7 +73,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.segment:
         return _run_segment(args.xlsx_path, options)
 
-    produced = convert(args.xlsx_path, args.out_dir, options)
+    if args.faithful:
+        produced = convert(args.xlsx_path, args.out_dir, options)
+    else:
+        produced = convert_structured(args.xlsx_path, args.out_dir, options)
 
     print(f"{len(produced)} 個の Markdown を生成しました:")
     for p in produced:
