@@ -67,15 +67,23 @@ def _classify(sheet: SheetModel, reg: Region,
     if images and len(origins) <= 1:
         return Figure(images=images)
 
-    # 単一の論理セル: 章番号 or 短文 = 見出し / それ以外 = 段落
+    region_ruled = _region_has_ruled(sheet, reg)
+
+    # 表を最優先で保護: 罫線で囲まれた複数セル領域は必ず表として扱う
+    if region_ruled and len(origins) >= 2 and (reg.n_rows >= 2 or reg.n_cols >= 2):
+        return Table(region=reg, has_merges=_has_merges(sheet, reg))
+
+    # 単一の論理セル: 積極証拠があれば見出し / それ以外は段落
     if len(origins) == 1:
-        text = sheet.origin_text[origins[0]]
-        if _NUM_RE.match(text) or len(text) <= _HEADING_MAXLEN:
+        o = origins[0]
+        text = sheet.origin_text[o]
+        if _is_heading(sheet, o, text, _is_full_width(sheet, reg, o)):
             return Heading(level=_heading_level(text), text=text)
         return Paragraph(text=text)
 
-    # 2 列の表で左列が短いラベル → KeyValue
-    if reg.n_cols == 2 and reg.n_rows >= 2 and _looks_like_kv(sheet, reg):
+    # 罫線なしの 2 列ラベル/値 → KeyValue(罫線ありなら表として扱う)
+    if (not region_ruled and reg.n_cols == 2 and reg.n_rows >= 2
+            and _looks_like_kv(sheet, reg)):
         return KeyValue(pairs=_kv_pairs(sheet, reg))
 
     # 2x2 以上 → 表
@@ -85,6 +93,47 @@ def _classify(sheet: SheetModel, reg: Region,
     # フォールバック: テキストを段落として連結
     joined = " ".join(sheet.origin_text[o] for o in origins)
     return Paragraph(text=joined)
+
+
+def _region_has_ruled(sheet: SheetModel, reg: Region) -> bool:
+    if not sheet.borders_are_structural:
+        return False
+    return any(
+        sheet.is_ruled(r, c)
+        for r in range(reg.r0, reg.r1 + 1) for c in range(reg.c0, reg.c1 + 1)
+    )
+
+
+def _is_heading(sheet: SheetModel, origin: tuple[int, int], text: str,
+                full_width: bool) -> bool:
+    """見出しは積極証拠を要求する(短いだけでは見出しにしない)。
+
+    証拠: 章番号 / 太字・塗り・大フォント / 全幅バナー(短文に限る)。
+    長文は全幅でも段落とみなす。
+    """
+    if _NUM_RE.match(text):
+        return True                      # 章番号は強い証拠
+    if len(text) > _HEADING_MAXLEN:
+        return False                     # 長文は段落(全幅でも)
+    # 表セル(罫線つき)は見出しにしない
+    if sheet.is_ruled(*origin):
+        return False
+    if full_width:
+        return True                      # 全幅バナーの短文 = 見出し
+    st = sheet.style.get(origin)
+    if st is None:
+        return False
+    larger = bool(st.font_size and sheet.body_font_size
+                  and st.font_size > sheet.body_font_size)
+    return bool(st.bold or st.has_fill or larger)
+
+
+def _is_full_width(sheet: SheetModel, reg: Region, origin: tuple[int, int]) -> bool:
+    """origin が領域の全幅を覆う単一セル(=バナー)か。"""
+    if origin[1] != reg.c0:
+        return False
+    _, cs = sheet.span_of.get(origin, (1, 1))
+    return cs >= reg.n_cols
 
 
 # --- 補助 ---

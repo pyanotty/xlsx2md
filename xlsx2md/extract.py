@@ -38,6 +38,12 @@ class SheetModel:
     covered_to_origin: dict[tuple[int, int], tuple[int, int]] = field(default_factory=dict)
     style: dict[tuple[int, int], CellInfo] = field(default_factory=dict)
     image_cells: dict[tuple[int, int], int] = field(default_factory=dict)
+    # 罫線のある物理セル(空セルも含む)。表領域の保護に使う
+    bordered: set[tuple[int, int]] = field(default_factory=set)
+    # 罫線が「表の構造」か「方眼紙全体の装飾」かの判定。装飾なら分割に使わない
+    borders_are_structural: bool = False
+    # 本文の代表フォントサイズ(見出し判定の基準)
+    body_font_size: float | None = None
 
     # --- 問い合わせ用ヘルパ ---
     def origin_of(self, r: int, c: int) -> tuple[int, int]:
@@ -49,8 +55,17 @@ class SheetModel:
     def has_image(self, r: int, c: int) -> bool:
         return self.image_cells.get((r, c), 0) > 0
 
+    def is_ruled(self, r: int, c: int) -> bool:
+        """罫線で囲まれた表セルか(空セルでも True)。装飾罫線は無視。"""
+        if not self.borders_are_structural:
+            return False
+        return (r, c) in self.bordered or self.origin_of(r, c) in self.bordered
+
     def is_blank(self, r: int, c: int) -> bool:
-        return self.text_at(r, c) == "" and not self.has_image(r, c)
+        # 罫線つきの空セルも「表の一部」として非空扱い → XY-cut で粉砕させない
+        return (self.text_at(r, c) == ""
+                and not self.has_image(r, c)
+                and not self.is_ruled(r, c))
 
     def addr(self, r: int, c: int) -> str:
         return f"{get_column_letter(c)}{r}"
@@ -71,10 +86,14 @@ def extract_sheet(ws, wsf, options) -> SheetModel | None:
 
     origin_text: dict[tuple[int, int], str] = {}
     style: dict[tuple[int, int], CellInfo] = {}
+    bordered: set[tuple[int, int]] = set()
 
     for row in ws.iter_rows():
         for cell in row:
             pos = (cell.row, cell.column)
+            # 罫線は被覆セルも含め全物理セルで収集(空の表セルを保護するため)
+            if _has_border(cell):
+                bordered.add(pos)
             if pos in covered_to_origin:
                 continue  # 被覆セルは origin 側で扱う
             raw = cell.value
@@ -102,32 +121,66 @@ def extract_sheet(ws, wsf, options) -> SheetModel | None:
     # 外接矩形(外周空白をトリム)
     bbox = _bbox(origin_text, span_of, image_cells)
     if bbox is None:
-        return None
+        # テキストが無くても罫線だけの表シートはありうる
+        if not bordered:
+            return None
+        rs = [r for r, _ in bordered]
+        cs = [c for _, c in bordered]
+        bbox = (min(rs), min(cs), max(rs), max(cs))
     min_row, min_col, max_row, max_col = bbox
+
+    # 罫線が「構造(表)」か「装飾(方眼紙の全面グリッド)」かを判定。
+    # 表が主体のシートは罫線被覆率が高くなるため、装飾とみなすのは
+    # 「ほぼ全セルが罫線」の極端な場合のみ(=保護を効かせる方向に倒す)。
+    area = (max_row - min_row + 1) * (max_col - min_col + 1)
+    in_box = sum(1 for (r, c) in bordered
+                 if min_row <= r <= max_row and min_col <= c <= max_col)
+    borders_are_structural = bool(bordered) and area > 0 and (in_box / area) < 0.9
+
+    # 構造的な罫線なら、罫線つき空セル領域まで外接矩形を広げる
+    if borders_are_structural:
+        for (r, c) in bordered:
+            min_row, min_col = min(min_row, r), min(min_col, c)
+            max_row, max_col = max(max_row, r), max(max_col, c)
+
+    body_font_size = _modal_font_size(style)
 
     return SheetModel(
         name=ws.title,
         min_row=min_row, min_col=min_col, max_row=max_row, max_col=max_col,
         origin_text=origin_text, span_of=span_of,
         covered_to_origin=covered_to_origin, style=style, image_cells=image_cells,
+        bordered=bordered, borders_are_structural=borders_are_structural,
+        body_font_size=body_font_size,
     )
+
+
+def _has_border(cell) -> bool:
+    border = cell.border
+    return any(
+        getattr(getattr(border, side), "style", None)
+        for side in ("left", "right", "top", "bottom")
+    )
+
+
+def _modal_font_size(style: dict[tuple[int, int], CellInfo]) -> float | None:
+    from collections import Counter
+    sizes = [s.font_size for s in style.values() if s.font_size]
+    if not sizes:
+        return None
+    return Counter(sizes).most_common(1)[0][0]
 
 
 def _cell_style(cell) -> CellInfo:
     font = cell.font
     fill = cell.fill
     has_fill = bool(getattr(fill, "patternType", None)) and fill.patternType != "none"
-    border = cell.border
-    has_border = any(
-        getattr(getattr(border, side), "style", None)
-        for side in ("left", "right", "top", "bottom")
-    )
     align = getattr(cell.alignment, "horizontal", None)
     return CellInfo(
         bold=bool(getattr(font, "bold", False)),
         font_size=getattr(font, "sz", None),
         has_fill=has_fill,
-        has_border=has_border,
+        has_border=_has_border(cell),
         h_align=align,
     )
 

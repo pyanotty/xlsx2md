@@ -5,6 +5,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Border, Font, Side
 
 # 1x1 透明 PNG
 _PNG = base64.b64decode(
@@ -74,6 +75,26 @@ ws2["E8"] = "8文字以上"
 ws2["B10"] = "1.2 画面イメージ"
 ws2.merge_cells("B10:E10")
 ws2.add_image(XLImage(str(img_path)), "B11")
+
+# --- シート3: 罫線つきの表(内部に空スペーサー列 D)。表粉砕の回帰テスト ---
+ws3 = wb.create_sheet("詳細設計")
+ws3["B2"] = "2. 詳細設計"
+ws3.merge_cells("B2:E2")
+ws3["B2"].font = Font(bold=True, size=14)
+# 表 B4:E7 (D 列はヘッダもデータも空だが罫線あり = スペーサー)
+ws3["B4"] = "項目"
+ws3["C4"] = "値"
+ws3["E4"] = "単位"
+for c in ("B4", "C4", "E4"):
+    ws3[c].font = Font(bold=True)
+ws3["B5"], ws3["C5"], ws3["E5"] = "最大同時接続数", 100, "件"
+ws3["B6"], ws3["C6"], ws3["E6"] = "タイムアウト", 30, "秒"
+ws3["B7"], ws3["C7"], ws3["E7"] = "リトライ回数", 3, "回"
+thin = Side(style="thin")
+box = Border(left=thin, right=thin, top=thin, bottom=thin)
+for r in range(4, 8):
+    for col in range(2, 6):  # B..E(空の D 含む)
+        ws3.cell(row=r, column=col).border = box
 
 wb.save(out)
 print("generated", out)

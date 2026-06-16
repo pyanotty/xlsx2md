@@ -57,22 +57,39 @@ def _stem(name: str) -> str:
 # --- GFM テーブル(結合なし) ---
 def _render_gfm_table(sheet: SheetModel, reg: Region, image_dirname: str,
                       image_map: dict[tuple[int, int], list[str]]) -> str:
+    # 全空の行・列(スペーサー)は落として自然な表にする
+    rows_idx = [r for r in range(reg.r0, reg.r1 + 1)
+                if not _row_empty(sheet, image_map, r, reg.c0, reg.c1)]
+    cols_idx = [c for c in range(reg.c0, reg.c1 + 1)
+                if not _col_empty(sheet, image_map, c, reg.r0, reg.r1)]
+    if not rows_idx or not cols_idx:
+        return ""
+
     rows: list[list[str]] = []
-    for r in range(reg.r0, reg.r1 + 1):
+    for r in rows_idx:
         row = []
-        for c in range(reg.c0, reg.c1 + 1):
+        for c in cols_idx:
             cell = _gfm_cell(sheet.text_at(r, c))
             for name in image_map.get((r, c), []):
                 cell += f"<br>![]({image_dirname}/{name})"
             row.append(cell)
         rows.append(row)
-    if not rows:
-        return ""
-    n = len(rows[0])
+
+    n = len(cols_idx)
     header = "| " + " | ".join(rows[0]) + " |"
     sep = "| " + " | ".join(["---"] * n) + " |"
     body = "\n".join("| " + " | ".join(r) + " |" for r in rows[1:])
     return "\n".join([header, sep] + ([body] if body else []))
+
+
+def _row_empty(sheet, image_map, r, c0, c1) -> bool:
+    return all(sheet.text_at(r, c) == "" and (r, c) not in image_map
+               for c in range(c0, c1 + 1))
+
+
+def _col_empty(sheet, image_map, c, r0, r1) -> bool:
+    return all(sheet.text_at(r, c) == "" and (r, c) not in image_map
+               for r in range(r0, r1 + 1))
 
 
 def _gfm_cell(text: str) -> str:
