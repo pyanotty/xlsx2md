@@ -47,7 +47,12 @@ class Figure:
     images: list[str] = field(default_factory=list)
 
 
-Block = Heading | Paragraph | Table | KeyValue | Figure
+@dataclass
+class Diagram:
+    mermaid: str            # 描画オブジェクトから復元した Mermaid flowchart
+
+
+Block = Heading | Paragraph | Table | KeyValue | Figure | Diagram
 
 
 def interpret(sheet: SheetModel, regions: list[Region],

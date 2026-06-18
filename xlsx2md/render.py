@@ -9,7 +9,7 @@ from __future__ import annotations
 from html import escape
 
 from .extract import SheetModel
-from .interpret import Block, Figure, Heading, KeyValue, Paragraph, Table
+from .interpret import Block, Diagram, Figure, Heading, KeyValue, Paragraph, Table
 from .segment import Region
 
 
@@ -38,6 +38,8 @@ def _render_block(sheet: SheetModel, b: Block, image_dirname: str,
         return "\n\n".join(
             f"![{_stem(name)}]({image_dirname}/{name})" for name in b.images
         )
+    if isinstance(b, Diagram):
+        return f"```mermaid\n{b.mermaid}\n```"
     if isinstance(b, Table):
         return (_render_html_table(sheet, b.region, image_dirname, image_map)
                 if b.has_merges

@@ -10,5 +10,7 @@ venv/
 
 # 生成物
 output/
+out_diag/
 sample.xlsx
+sample_diagram.xlsx
 _tmp_*.png
