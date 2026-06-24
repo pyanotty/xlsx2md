@@ -32,7 +32,17 @@ def _run_segment(xlsx_path: str, options: Options) -> int:
     return 0
 
 
+def _force_utf8_console() -> None:
+    """Windows の旧コンソール(cp932)で日本語 print が落ちないようにする。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")   # Python 3.7+
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_console()
     parser = argparse.ArgumentParser(
         prog="xlsx2md",
         description="Excel 文書(要件定義書・画面設計書)を Markdown に変換する。"

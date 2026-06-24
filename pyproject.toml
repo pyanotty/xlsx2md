@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xlsx2md"
+version = "1.0.0"
+description = "Excel で作成された要件定義書・画面設計書を Markdown に変換する"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["openpyxl>=3.1"]
+
+[project.scripts]
+xlsx2md = "xlsx2md.cli:main"
+
+[tool.setuptools]
+packages = ["xlsx2md"]

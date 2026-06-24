@@ -503,6 +503,21 @@ output/
       シート名_img1.png
 ```
 
+### Windows（EXE・Python 不要）
+
+Python を入れられない Windows 環境向けに、単一実行ファイル `xlsx2md.exe` を配布できる。
+
+```bat
+xlsx2md.exe path\to\spec.xlsx -o output
+```
+
+オプションは CLI と同一。`.exe` は GitHub Actions（`windows-latest`）で自動ビルドする（[.github/workflows/windows-build.yml](.github/workflows/windows-build.yml)）。
+
+- **取得**: Actions を手動実行（workflow_dispatch）→ Artifacts から `xlsx2md-windows` をダウンロード。
+- **配布版**: `v*` タグを push すると Release に `xlsx2md.exe` が添付される。
+- 出力 `.md` 内の Mermaid を図として見るには、Mermaid 対応ビューア（VS Code 拡張・GitHub・Obsidian 等）で開く。
+- 未署名 EXE は SmartScreen/ウイルス対策の警告が出る場合がある（本番配布ではコード署名を検討）。
+
 ### ライブラリ
 
 ```python

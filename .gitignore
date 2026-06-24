@@ -14,3 +14,8 @@ out_diag/
 sample.xlsx
 sample_diagram.xlsx
 _tmp_*.png
+
+# ビルド成果物(PyInstaller)
+build/
+dist/
+*.spec
