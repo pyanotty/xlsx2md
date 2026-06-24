@@ -120,58 +120,142 @@ def _norm(path: str) -> str:
     return "/".join(parts)
 
 
+# セル内オフセット(EMU)を分数セルに直すための公称サイズ。
+# 厳密な列幅・行高の解決は避け、近似で十分(最近傍マッチングに使うだけ)。
+_EMU_PER_COL = 609600    # 既定列幅 ≈ 64px
+_EMU_PER_ROW = 190500    # 既定行高 ≈ 20px
+# 端点を図形に対応づける許容距離(セル単位)
+_MATCH_TOL = 3.0
+# sp でも「線/コネクタ/矢印」の preset はエッジ候補として扱う
+_CONNECTOR_GEOMS = {
+    "line", "straightConnector1",
+    "bentConnector2", "bentConnector3", "bentConnector4", "bentConnector5",
+    "curvedConnector2", "curvedConnector3", "curvedConnector4", "curvedConnector5",
+    "rightArrow", "leftArrow", "upArrow", "downArrow",
+    "leftRightArrow", "upDownArrow", "bentArrow", "bentUpArrow", "curvedRightArrow",
+}
+
+
 # --------------------------------------------------------------------------- #
 # drawing XML のパース
 # --------------------------------------------------------------------------- #
 def _parse_drawing(data: bytes) -> SheetDiagram | None:
     root = ET.fromstring(data)
     nodes: list[Node] = []
-    edges: list[Edge] = []
-    skipped = 0
+    node_boxes: dict[str, tuple[float, float, float, float]] = {}
+    # エッジ候補: ("explicit", src, dst, label) or ("geom", p_from, p_to, label)
+    candidates: list[tuple] = []
 
-    for anchor in root:
-        frm = anchor.find("xdr:from", _NS)
-        row = int(frm.findtext("xdr:row", "0", _NS)) + 1 if frm is not None else 1
-        col = int(frm.findtext("xdr:col", "0", _NS)) + 1 if frm is not None else 1
-
-        sp = anchor.find("xdr:sp", _NS)
-        if sp is not None:
-            nodes.append(Node(
-                id=_shape_id(sp),
-                text=_shape_text(sp),
-                geom=_geom(sp),
-                row=row, col=col,
-            ))
-            continue
-
-        cxn = anchor.find("xdr:cxnSp", _NS)
-        if cxn is not None:
-            cxpr = cxn.find("xdr:nvCxnSpPr/xdr:cNvCxnSpPr", _NS)
-            st = cxpr.find("a:stCxn", _NS) if cxpr is not None else None
-            en = cxpr.find("a:endCxn", _NS) if cxpr is not None else None
-            if st is not None and en is not None:
-                edges.append(Edge(
-                    src=st.get("id"), dst=en.get("id"),
-                    label=_shape_text(cxn),
-                ))
-            else:
-                skipped += 1   # 明示接続なし → フェーズ1では落とす
+    for anchor in root.iter(f"{{{_NS['xdr']}}}twoCellAnchor"):
+        _parse_anchor(anchor, nodes, node_boxes, candidates)
+    for anchor in root.iter(f"{{{_NS['xdr']}}}oneCellAnchor"):
+        _parse_anchor(anchor, nodes, node_boxes, candidates)
 
     if not nodes:
         return None
+
+    edges: list[Edge] = []
+    skipped = 0
+    for cand in candidates:
+        if cand[0] == "explicit":
+            _, src, dst, label = cand
+            if src in node_boxes and dst in node_boxes and src != dst:
+                edges.append(Edge(src=src, dst=dst, label=label))
+            else:
+                skipped += 1
+        else:  # 幾何推定: 端点に最も近い図形へ対応づけ
+            _, p_from, p_to, label = cand
+            src = _nearest(p_from, node_boxes)
+            dst = _nearest(p_to, node_boxes)
+            if src and dst and src != dst:
+                edges.append(Edge(src=src, dst=dst, label=label))
+            else:
+                skipped += 1
+
     anchor_row = min(n.row for n in nodes)
     anchor_col = min(n.col for n in nodes)
     return SheetDiagram(anchor_row, anchor_col, nodes, edges, skipped)
 
 
+def _parse_anchor(anchor, nodes, node_boxes, candidates) -> None:
+    p_from = _marker(anchor, "from")
+    p_to = _marker(anchor, "to") or p_from
+    if p_from is None:
+        return
+
+    sp = anchor.find("xdr:sp", _NS)
+    cxn = anchor.find("xdr:cxnSp", _NS)
+
+    # コネクタ(cxnSp) or 線/矢印形状(sp) → エッジ候補
+    if cxn is not None:
+        candidates.append(_edge_candidate(cxn, p_from, p_to))
+        return
+    if sp is not None and _geom(sp) in _CONNECTOR_GEOMS:
+        candidates.append(_edge_candidate(sp, p_from, p_to))
+        return
+
+    # それ以外の sp → ノード(図形)
+    if sp is not None:
+        nid = _shape_id(sp)
+        nodes.append(Node(id=nid, text=_shape_text(sp), geom=_geom(sp),
+                          row=int(p_from[0]) + 1, col=int(p_from[1]) + 1))
+        node_boxes[nid] = (p_from[0], p_from[1], p_to[0], p_to[1])
+
+
+def _edge_candidate(el, p_from, p_to) -> tuple:
+    """明示接続があれば ('explicit',...)、無ければ ('geom',...) を返す。"""
+    cxpr = el.find("xdr:nvCxnSpPr/xdr:cNvCxnSpPr", _NS)
+    st = cxpr.find("a:stCxn", _NS) if cxpr is not None else None
+    en = cxpr.find("a:endCxn", _NS) if cxpr is not None else None
+    label = _shape_text(el)
+    if st is not None and en is not None:
+        return ("explicit", st.get("id"), en.get("id"), label)
+    return ("geom", p_from, p_to, label)
+
+
+def _marker(anchor, tag) -> tuple[float, float] | None:
+    """xdr:from / xdr:to を分数セル座標 (row, col) で返す。"""
+    m = anchor.find(f"xdr:{tag}", _NS)
+    if m is None:
+        return None
+    col = int(m.findtext("xdr:col", "0", _NS))
+    coff = int(m.findtext("xdr:colOff", "0", _NS))
+    row = int(m.findtext("xdr:row", "0", _NS))
+    roff = int(m.findtext("xdr:rowOff", "0", _NS))
+    return (row + roff / _EMU_PER_ROW, col + coff / _EMU_PER_COL)
+
+
+def _nearest(point, boxes) -> str | None:
+    """点に最も近い図形 id を返す(許容距離 _MATCH_TOL を超えたら None)。"""
+    best, best_d = None, float("inf")
+    for nid, box in boxes.items():
+        d = _point_box_dist(point, box)
+        if d < best_d:
+            best, best_d = nid, d
+    return best if best_d <= _MATCH_TOL else None
+
+
+def _point_box_dist(point, box) -> float:
+    pr, pc = point
+    r0, c0, r1, c1 = box
+    if r1 < r0:
+        r0, r1 = r1, r0
+    if c1 < c0:
+        c0, c1 = c1, c0
+    dr = max(r0 - pr, 0.0, pr - r1)
+    dc = max(c0 - pc, 0.0, pc - c1)
+    return (dr * dr + dc * dc) ** 0.5
+
+
 def _shape_id(sp) -> str:
     cnv = sp.find("xdr:nvSpPr/xdr:cNvPr", _NS)
+    if cnv is None:
+        cnv = sp.find("xdr:nvCxnSpPr/xdr:cNvPr", _NS)
     return cnv.get("id") if cnv is not None else ""
 
 
 def _shape_text(sp) -> str:
     texts = [t.text or "" for t in sp.findall("xdr:txBody/a:p/a:r/a:t", _NS)]
-    # 段落区切り(改行)も拾う
     if not texts:
         texts = [t.text or "" for t in sp.findall(".//a:t", _NS)]
     return "".join(texts).strip()

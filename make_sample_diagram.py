@@ -64,7 +64,7 @@ DRAWING = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <xdr:from><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>7</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
     <xdr:to><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>8</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
     <xdr:cxnSp macro="">
-      <xdr:nvCxnSpPr><xdr:cNvPr id="6" name="コネクタ 5"/><xdr:cNvCxnSpPr><a:stCxn id="3" idx="2"/><a:endCxn id="4" idx="0"/></xdr:cNvCxnSpPr></xdr:nvCxnSpPr>
+      <xdr:nvCxnSpPr><xdr:cNvPr id="6" name="コネクタ 5"/><xdr:cNvCxnSpPr/></xdr:nvCxnSpPr>
       <xdr:spPr><a:prstGeom prst="straightConnector1"><a:avLst/></a:prstGeom><a:ln><a:tailEnd type="triangle"/></a:ln></xdr:spPr>
       <xdr:txBody><a:bodyPr/><a:p><a:r><a:t>OK</a:t></a:r></a:p></xdr:txBody>
     </xdr:cxnSp>
@@ -74,7 +74,7 @@ DRAWING = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <xdr:from><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
     <xdr:to><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>3</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
     <xdr:cxnSp macro="">
-      <xdr:nvCxnSpPr><xdr:cNvPr id="7" name="コネクタ 6"/><xdr:cNvCxnSpPr><a:stCxn id="3" idx="1"/><a:endCxn id="2" idx="1"/></xdr:cNvCxnSpPr></xdr:nvCxnSpPr>
+      <xdr:nvCxnSpPr><xdr:cNvPr id="7" name="コネクタ 6"/><xdr:cNvCxnSpPr/></xdr:nvCxnSpPr>
       <xdr:spPr><a:prstGeom prst="straightConnector1"><a:avLst/></a:prstGeom><a:ln><a:tailEnd type="triangle"/></a:ln></xdr:spPr>
       <xdr:txBody><a:bodyPr/><a:p><a:r><a:t>NG</a:t></a:r></a:p></xdr:txBody>
     </xdr:cxnSp>
