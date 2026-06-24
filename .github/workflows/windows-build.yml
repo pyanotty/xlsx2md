@@ -1,0 +1,45 @@
+name: build-windows-exe
+
+# Windows 用の単一 EXE を windows-latest ランナーでビルドする。
+# - 手動実行(workflow_dispatch): Actions の Artifacts から .exe を取得
+# - タグ push (v*): Release に .exe を添付
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # タグ時の Release 作成に必要
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 依存のインストール
+        run: pip install pyinstaller openpyxl
+
+      - name: EXE をビルド
+        # --paths . でリポジトリ直下の xlsx2md パッケージを収集対象にする
+        run: pyinstaller --onefile --name xlsx2md --paths . --collect-submodules openpyxl packaging/entry.py
+
+      - name: スモークテスト(--help が起動するか)
+        run: dist/xlsx2md.exe --help
+
+      - name: Artifact としてアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: xlsx2md-windows
+          path: dist/xlsx2md.exe
+
+      - name: タグ時は Release に添付
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/xlsx2md.exe
