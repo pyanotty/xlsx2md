@@ -505,18 +505,13 @@ output/
 
 ### Windows（EXE・Python 不要）
 
-Python を入れられない Windows 環境向けに、単一実行ファイル `xlsx2md.exe` を配布できる。
+Python を入れられない Windows 環境向けに、単一実行ファイル `xlsx2md.exe` を配布できる。オプションは CLI と同一。
 
 ```bat
 xlsx2md.exe path\to\spec.xlsx -o output
 ```
 
-オプションは CLI と同一。`.exe` は GitHub Actions（`windows-latest`）で自動ビルドする（[.github/workflows/windows-build.yml](.github/workflows/windows-build.yml)）。
-
-- **取得**: Actions を手動実行（workflow_dispatch）→ Artifacts から `xlsx2md-windows` をダウンロード。
-- **配布版**: `v*` タグを push すると Release に `xlsx2md.exe` が添付される。
-- 出力 `.md` 内の Mermaid を図として見るには、Mermaid 対応ビューア（VS Code 拡張・GitHub・Obsidian 等）で開く。
-- 未署名 EXE は SmartScreen/ウイルス対策の警告が出る場合がある（本番配布ではコード署名を検討）。
+ビルド・配布の仕組みと、他に取りうる実行方式は **§10 Windows 環境での実行方式** を参照。
 
 ### ライブラリ
 
@@ -546,4 +541,224 @@ print(paths)  # 生成した .md のパス一覧
 
 ## 8. スコープ外（初版）
 
-グラフ、図形・テキストボックス・矢印などの描画オブジェクト、セルのコメント、見た目書式（色・太字・罫線）の出力。詳細は要件定義書「4. スコープ外」を参照。
+グラフ（chart）、図中以外のテキストボックス、セルのコメント、見た目書式（色・太字・罫線）の出力。
+（**画面遷移図の図形・コネクタは §9 で対応済み**。）詳細は要件定義書「4. スコープ外」を参照。
+
+---
+
+## 9. 画面遷移図 → Mermaid 変換
+
+要件定義書・画面設計書には、Excel の**図形（ブロック）と矢印（コネクタ）**で描いた**画面遷移図**が含まれることがある。これを **Mermaid の `flowchart`** に復元して Markdown に埋め込む。セル解釈とは独立した抽出経路（[shapes.py](xlsx2md/shapes.py) / [mermaid.py](xlsx2md/mermaid.py)）。
+
+### 9.1 なぜ別経路か
+
+図形・矢印は**セルの中身ではなく描画オブジェクト（DrawingML）**で、xlsx 内の `xl/drawings/drawingN.xml` に格納される。**openpyxl はこれをほぼ破棄する**（画像だけ別扱い）。そこで **xlsx を zip として開き、drawing XML を直接パース**する。
+
+```
+xlsx(zip)
+ ├─ xl/workbook.xml                 … シート名 → シート部品
+ ├─ xl/worksheets/sheetN.xml        … セル(openpyxl が読む層)
+ └─ xl/drawings/drawingN.xml        … 図形 sp・コネクタ cxnSp(この層を自前で読む)
+```
+
+### 9.2 データモデル
+
+```python
+@dataclass
+class Node:   # 図形(ブロック)
+    id: str; text: str; geom: str; row: int; col: int   # geom=rect/roundRect/diamond...
+@dataclass
+class Edge:   # 矢印(エッジ)
+    src: str; dst: str; label: str = ""
+@dataclass
+class SheetDiagram:
+    anchor_row: int; anchor_col: int
+    nodes: list[Node]; edges: list[Edge]
+    skipped_connectors: int   # トポロジを解決できず落とした矢印の数
+```
+
+### 9.3 リレーション解決（workbook → sheet → drawing）
+
+シート名と drawing を結びつけるため、OOXML の関係(rels)を 3 段で辿る。
+**落とし穴**: openpyxl が書き出す rels の `Target` は**絶対パス（`/xl/...`）**のことがあり、相対結合だと壊れる。所有パス基準で解決する。
+
+```python
+def _resolve(owner_part, target):
+    if target.startswith("/"):
+        return target.lstrip("/")               # 絶対(パッケージルート基準)
+    base_dir = owner_part.rsplit("/", 1)[0] if "/" in owner_part else ""
+    return _norm(f"{base_dir}/{target}" if base_dir else target)
+```
+
+### 9.4 図形とコネクタの判別
+
+各アンカー（`twoCellAnchor` / `oneCellAnchor`）の中身を見て、ノードかエッジ候補かを振り分ける。コネクタ `cxnSp` に加え、**線・矢印プリセットの `sp`**（`straightConnector1` / `rightArrow` 等）もエッジ候補に含める。
+
+```python
+def _parse_anchor(anchor, nodes, node_boxes, candidates):
+    p_from = _marker(anchor, "from")
+    p_to = _marker(anchor, "to") or p_from
+    sp = anchor.find("xdr:sp", _NS)
+    cxn = anchor.find("xdr:cxnSp", _NS)
+    if cxn is not None:                                   # コネクタ → エッジ候補
+        candidates.append(_edge_candidate(cxn, p_from, p_to)); return
+    if sp is not None and _geom(sp) in _CONNECTOR_GEOMS:  # 線/矢印形状 → エッジ候補
+        candidates.append(_edge_candidate(sp, p_from, p_to)); return
+    if sp is not None:                                    # それ以外 → ノード(図形)
+        nid = _shape_id(sp)
+        nodes.append(Node(id=nid, text=_shape_text(sp), geom=_geom(sp), ...))
+        node_boxes[nid] = (p_from[0], p_from[1], p_to[0], p_to[1])
+```
+
+### 9.5 トポロジ復元（2 段）
+
+「どのノード → どのノードか」を、信頼度の高い順に 2 段で決める。
+
+| 段 | 手法 | 根拠 | 信頼度 |
+|---|---|---|---|
+| **tier1 明示接続** | コネクタの `stCxn`/`endCxn` が指す図形 id をそのまま採用 | Excel が接続先を明記している | 高（決定的） |
+| **tier2 幾何推定** | 明示接続が無い手置き矢印は、始点/終点アンカー座標に**最も近い図形**へ対応づけ | 端点は普通その図形の縁にある | 中（近似） |
+
+```python
+for cand in candidates:
+    if cand[0] == "explicit":                 # tier1
+        _, src, dst, label = cand
+        if src in node_boxes and dst in node_boxes and src != dst:
+            edges.append(Edge(src, dst, label))
+        else: skipped += 1
+    else:                                      # tier2 幾何推定
+        _, p_from, p_to, label = cand
+        src = _nearest(p_from, node_boxes); dst = _nearest(p_to, node_boxes)
+        if src and dst and src != dst:
+            edges.append(Edge(src, dst, label))
+        else: skipped += 1
+```
+
+**座標モデル**: アンカーのセル＋セル内オフセット(EMU)を**分数セル座標** `(row, col)` に直す。厳密な列幅・行高の解決は避け、公称サイズ（列 ≈ 609600 EMU、行 ≈ 190500 EMU）で近似する（最近傍判定にしか使わないため十分）。点と図形矩形の距離が許容 `_MATCH_TOL = 3` セルを超えたら対応なしとする。
+
+```python
+def _marker(anchor, tag):   # from/to → 分数セル座標
+    ...
+    return (row + roff / _EMU_PER_ROW, col + coff / _EMU_PER_COL)
+```
+
+### 9.6 Mermaid 生成
+
+ノードの図形種別を Mermaid のノード形状へ写し、`flowchart` を組み立てる。向き（縦 `TD` / 横 `LR`）は図形群の広がりから推定する。
+
+| Excel 図形（prstGeom） | Mermaid ノード |
+|---|---|
+| 角丸四角 `roundRect` | `n1("テキスト")` |
+| 四角 `rect` / `flowChartProcess` | `n1["テキスト"]` |
+| 菱形 `diamond` / `flowChartDecision` | `n1{"テキスト"}` |
+| 楕円 `ellipse` | `n1(("テキスト"))` |
+| 端子 `flowChartTerminator` | `n1(["テキスト"])` |
+
+```python
+def build_mermaid(diagram):
+    name = {n.id: f"n{i}" for i, n in enumerate(diagram.nodes, start=1)}
+    lines = [f"flowchart {_direction(diagram.nodes)}"]   # 横長→LR / 縦長→TD
+    for n in diagram.nodes:
+        lo, hi = _GEOM_WRAP.get(n.geom, _DEFAULT_WRAP)
+        lines.append(f"  {name[n.id]}{lo}{_label(n.text)}{hi}")
+    for e in diagram.edges:
+        arrow = f"  {name[e.src]} -->"
+        if e.label:
+            arrow += f"|{_edge_label(e.label)}|"          # 矢印の文字 → エッジラベル
+        lines.append(f"{arrow} {name[e.dst]}")
+    return "\n".join(lines)
+```
+
+### 9.7 パイプライン統合と配置
+
+図はセルの格子に乗らない（多くは空セル上に描かれる）ため、XY-cut からは見えない。そこで `Diagram` ブロックを別レイヤーとして作り、図の**アンカー左上セルの行**を使って、セル由来ブロックと**読み順に併合**する。図しか無いシートにも対応する。
+
+```python
+# pipeline: セル由来ブロックと図を行位置で併合(同行はセルを先に)
+items = [(regions[i].r0, 0, blk) for i, blk in enumerate(cell_blocks)]
+for d in diagrams:
+    items.append((d.anchor_row, 1, Diagram(build_mermaid(d))))
+items.sort(key=lambda x: (x[0], x[1]))
+```
+
+### 9.8 例（Excel の図 → 出力）
+
+```
+[角丸:ログイン画面] ──▶ [菱形:認証成功?] ──OK──▶ [四角:トップ画面]
+                              └────────────NG───▶（ログイン画面へ戻る）
+```
+↓
+````markdown
+```mermaid
+flowchart TD
+  n1("ログイン画面")
+  n2{"認証成功?"}
+  n3["トップ画面"]
+  n1 --> n2
+  n2 -->|OK| n3
+  n2 -->|NG| n1
+```
+````
+
+### 9.9 既知の限界
+
+- **グループ化（`grpSp`）された図は未対応**。図形が group 内に入っているとノードも取れない（実ファイルで「ノードすら取れない」場合はこれが原因の可能性が高い）。
+- **ブロック矢印**（`rightArrow` 等）は向きが図形の回転に依存し、from→to 近似が外れることがある。
+- 幾何推定は**セルアンカー座標の近似**で、厳密な列幅・行高は解決していない。端点が複数図形の中間にあると誤対応の余地。
+- 解決できなかった矢印は `skipped_connectors` として `-v` に件数表示される（実ファイルでの当たり具合の指標）。
+- 出力 `.md` の Mermaid を**図として見る**には、Mermaid 対応ビューア（VS Code 拡張・GitHub・Obsidian 等）が要る。
+
+---
+
+## 10. Windows 環境での実行方式
+
+### 10.1 前提：コードは OS 非依存
+
+本実装は `pathlib` / `zipfile` / `xml.etree` / `openpyxl` のみで、POSIX 固有の呼び出しは無く、ファイル出力も `utf-8` を明示している。したがって Windows へ「移植」する必要はほぼ無く、課題は**配布・実行方法（パッケージング）**に絞られる。ランタイム依存も軽量で、**コア変換は openpyxl のみ**（Pillow はサンプル生成専用でランタイム不要）。
+
+### 10.2 現状採用：単一 EXE（PyInstaller）＋ GitHub Actions
+
+クライアントが **Python を入れない**前提のため、全依存を 1 つの `xlsx2md.exe` に同梱する方式を採用している。
+
+- エントリは [packaging/entry.py](packaging/entry.py)（パッケージの `__main__.py` は相対 import で凍結時に壊れるため、絶対 import のエントリを用意）。
+- ビルドコマンド（CI・ローカル共通）:
+
+  ```bat
+  pyinstaller --onefile --name xlsx2md --paths . --collect-submodules openpyxl packaging\entry.py
+  ```
+
+  - **`--paths .`**：リポジトリ直下の `xlsx2md` パッケージを source から収集（無いと `No module named 'xlsx2md'` で失敗）。
+  - **`--collect-submodules openpyxl`**：openpyxl の遅延 import 漏れ対策。
+- **ビルドは Windows 上でのみ可能**（PyInstaller はクロスコンパイル不可）。手元に Windows 機が無くても、**GitHub Actions の `windows-latest` ランナーで自動ビルド**できる（[.github/workflows/windows-build.yml](.github/workflows/windows-build.yml)）。
+  - 手動実行（workflow_dispatch）→ Actions の **Artifacts** から `xlsx2md-windows` を取得。
+  - `v*` タグ push → **Release** に `xlsx2md.exe` を添付。
+- Windows 旧コンソール（cp932）で日本語 print が落ちないよう、CLI 起動時に標準出力を UTF-8 へ再構成している。
+
+クライアントは Python 不要で実行する:
+
+```bat
+xlsx2md.exe spec.xlsx -o output
+```
+
+### 10.3 取りうる他の方式（参考）
+
+「Windows で Python を前提にしない」実装は exe 以外にもあり、本質は**実行環境（ランタイム）をどう確保するか**で 3 戦略に分かれる。
+
+| 戦略 | 具体形 | 追加インストール | 既存 Python 資産 | 図形/コネクタ取得 | headless |
+|---|---|---|---|---|---|
+| **A. ランタイムを隠して同梱** | ① PyInstaller exe（**採用**）<br>② Python embeddable + .bat | 不要 | そのまま流用 | XML 自前パース | ◯ |
+| **B. Windows 標準環境を使う** | ③ PowerShell スクリプト<br>④ Excel VBA / COM | 不要(※) | 再実装 | ③ △ / ④ ◎ | ③ ◯ / ④ ✕ |
+| **C. ネイティブに作り直す** | ⑤ .NET 自己完結 exe (C#) | 不要 | 再実装 | OpenXML SDK で取得 | ◯ |
+
+※ ③④は Windows / Excel に元から載っているものを使う意味。
+
+- **③ PowerShell スクリプト（Excel 不要）**：`.ps1` 1 枚に、`.NET` の `System.IO.Compression`（zip）＋ `System.Xml` で今の処理を移植。Excel 不要・headless 可だが**全ロジック再実装**＋実行ポリシー/署名の運用が要る。
+- **④ Excel VBA / PowerShell+COM（Excel 必須）**：Excel のオブジェクトモデルで、セル・結合に加え `Worksheet.Shapes` / `Shape.ConnectorFormat.BeginConnectedShape` 等から**図形・コネクタを直接取得**できる。**画面遷移図の復元が最も楽**になる一方、**Excel 必須・GUI 自動化で遅く脆い・headless 不可**。
+- **⑤ .NET 自己完結 exe（C#）**：OpenXML SDK / ClosedXML 等で再実装し `dotnet publish --self-contained -p:PublishSingleFile=true`。ネイティブで素直だが**全面移植**コスト。
+
+### 10.4 方式選定の指針
+
+- **最短解は採用中の A①**。既存の動くロジックを書き直さずに「Python 非依存」を満たせるのが決定的。
+- **画面遷移図の精度を最優先**し、運用が「担当者が Excel で開いてボタン変換」型なら **④ VBA/COM** が技術的に有利（Excel に図を解かせられる）。ただし headless 不可・Excel 依存。
+- **サーバ/バッチで無人実行（headless 必須）**なら A / C / ③（Excel を使わない経路）。
+- 補足：未署名 EXE は SmartScreen/ウイルス対策の警告が出うる → 本番配布ではコード署名を検討。
